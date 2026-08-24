@@ -65,7 +65,7 @@ font_css = f"""
 }}
 """ if font_base64 else "@import url('https://v1.fontapi.ir/css/Rey');"
 
-# ۴. استایل کامل CSS - اصلاح دکمه آپلود و چیدمان
+# ۴. استایل CSS
 st.markdown(f"""
 <style>
     {font_css}
@@ -74,7 +74,6 @@ st.markdown(f"""
     .stApp {{ background-color: #ffffff; direction: rtl; }}
     .block-container {{ padding: 0 !important; max-width: 100% !important; }}
 
-    /* اصلاح کامل دکمه آپلود Streamlit برای جلوگیری از هم‌پوشانی متنی */
     [data-testid="stFileUploader"] {{
         direction: rtl !important;
     }}
@@ -90,7 +89,6 @@ st.markdown(f"""
         margin: 0 auto !important;
     }}
 
-    /* خنثی‌سازی اثر مات شدن صفحه */
     html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stVerticalBlock"], div {{
         opacity: 1 !important;
         filter: none !important;
@@ -138,57 +136,75 @@ def clean_domain(url):
     if domain.startswith('www.'): domain = domain[4:]
     return domain.split('/')[0]
 
-# ۵. تابع مقاوم‌سازی‌شده استعلام برای سرور ابری
+# ۵. تابع هوشمند استعلام با چند سطح پشتیبانی (Fallback)
 def check_ecunion_modal(page, site_url):
     domain = clean_domain(site_url)
     if not domain: 
         return "آدرس نامعتبر"
     
     try:
-        # لود اولیه صفحه
-        response = page.goto("https://ecunion.ir/", wait_until="commit", timeout=35000)
-        time.sleep(3.0)
-        
-        # تلاش برای یافتن دکمه استعلام با انتخابگرهای متعدد
-        btn = page.locator("text=استعلام مجوز, a:has-text('استعلام'), button:has-text('استعلام')").first
-        if btn.is_visible(): 
-            btn.click()
+        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=40000)
+        time.sleep(2)
+
+        # روش اول: تلاش برای باز کردن مودال
+        try:
+            page.evaluate("""() => {
+                const btns = Array.from(document.querySelectorAll('a, button, div'));
+                const target = btns.find(b => b.textContent && b.textContent.includes('استعلام'));
+                if (target) target.click();
+            }""")
+            time.sleep(1.5)
+        except:
+            pass
+
+        # روش دوم: یافتن فیلد ورودی متن
+        input_element = None
+        selectors = ["input[type='text']", "input[name*='search']", "input[placeholder*='دامنه']", ".modal-body input", "input"]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.is_visible():
+                    input_element = loc
+                    break
+            except:
+                continue
+
+        if not input_element:
+            # اگر فیلد پیدا نشد، مستقیم با جاوااسکریپت مقداردهی و ارسال می‌کنیم
+            page.evaluate(f"""() => {{
+                const inp = document.querySelector('input');
+                if (inp) {{
+                    inp.value = '{domain}';
+                    inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                    inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                }}
+            }}""")
         else:
-            page.evaluate("() => { const el = document.querySelector(\"a[href*='modal'], button[data-toggle='modal']\"); if(el) el.click(); }")
-            
-        time.sleep(2.0)
-        
-        # یافتن اینپوت و تایپ دامنه
-        search_input = page.locator("input[type='text'], .modal-body input").first
-        search_input.wait_for(state="visible", timeout=10000)
-        search_input.click()
-        search_input.fill("")
-        search_input.type(domain, delay=70)
-        time.sleep(1.0)
-        
-        # ارسال فرم
+            input_element.click()
+            input_element.fill(domain)
+
+        time.sleep(1)
         page.keyboard.press("Enter")
-        time.sleep(4.0)
-        
-        # دریافت پاسخ
+        time.sleep(4)
+
         popup_text = page.locator("body").inner_text()
-        
+
         if any(msg in popup_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
             return "مجوزی در اتحادیه ثبت نشده"
-            
+
         date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', popup_text)
         if date_match: 
             return f"معتبر تا {date_match.group(1)}"
-            
-        if "اعتبار" in popup_text or "تاریخ" in popup_text:
-            for line in popup_text.split('\n'):
-                if any(kw in line for kw in ["اعتبار", "انقضا", "تاریخ"]):
+
+        for line in popup_text.split('\n'):
+            if any(kw in line for kw in ["اعتبار", "انقضا", "تاریخ"]):
+                if len(line.strip()) < 50:
                     return line.strip()
-                    
+
         return "مجوزی در اتحادیه ثبت نشده"
-        
+
     except Exception as e:
-        return f"خطا در پردازش آدرس"
+        return "خطا در پردازش آدرس"
 
 if 'stop_processing' not in st.session_state:
     st.session_state['stop_processing'] = False
@@ -196,7 +212,6 @@ if 'stop_processing' not in st.session_state:
 # ۶. چیدمان ستون‌ها
 col_right, col_left = st.columns([1, 1])
 
-# ستون سمت چپ (بنر برند سرمه‌ای)
 with col_left:
     img_iran_html = f'<img src="{logo_iran}" width="480" style="filter: brightness(0) invert(1); margin-bottom: 5px; max-width: 90%; height: auto;">' if logo_iran else ''
     img_union_html = f'<img src="{logo_union}" width="360" style="margin-bottom: 15px; max-width: 80%; height: auto;">' if logo_union else ''
@@ -213,7 +228,6 @@ with col_left:
     </div>
     """, unsafe_allow_html=True)
 
-# ستون سمت راست (فرم آپلود و دکمه‌ها)
 with col_right:
     st.markdown('<div class="right-side-container">', unsafe_allow_html=True)
     st.markdown("""
@@ -269,9 +283,9 @@ with col_right:
                             "--disable-gpu"
                         ]
                     )
-                    # تنظیم هویت مرورگر واقعی تا توسط سرور بلاک نشود
                     context = browser.new_context(
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        viewport={"width": 1280, "height": 720}
                     )
                     page = context.new_page()
 
