@@ -65,7 +65,7 @@ font_css = f"""
 }}
 """ if font_base64 else "@import url('https://v1.fontapi.ir/css/Rey');"
 
-# ۴. استایل کامل CSS - رفع بهم‌ریختگی دکمه آپلود و مات شدن صفحه
+# ۴. استایل کامل CSS - اصلاح دکمه آپلود و چیدمان
 st.markdown(f"""
 <style>
     {font_css}
@@ -73,17 +73,21 @@ st.markdown(f"""
     #MainMenu, footer, header, [data-testid="stHeader"] {{ visibility: hidden !important; display: none !important; }}
     .stApp {{ background-color: #ffffff; direction: rtl; }}
     .block-container {{ padding: 0 !important; max-width: 100% !important; }}
-    
-    /* رفع بهم‌ریختگی دکمه آپلود */
-    [data-testid="stFileUploader"] section {{
-        direction: ltr !important;
-        padding: 15px !important;
-    }}
-    [data-testid="stFileUploader"] section * {{
-        font-family: inherit !important;
-    }}
-    [data-testid="stFileUploaderDeleteBtn"] {{
+
+    /* اصلاح کامل دکمه آپلود Streamlit برای جلوگیری از هم‌پوشانی متنی */
+    [data-testid="stFileUploader"] {{
         direction: rtl !important;
+    }}
+    [data-testid="stFileUploader"] section {{
+        padding: 20px !important;
+        border-radius: 12px !important;
+    }}
+    [data-testid="stFileUploader"] section > div {{
+        direction: rtl !important;
+    }}
+    [data-testid="stFileUploader"] button {{
+        font-family: inherit !important;
+        margin: 0 auto !important;
     }}
 
     /* خنثی‌سازی اثر مات شدن صفحه */
@@ -92,9 +96,6 @@ st.markdown(f"""
         filter: none !important;
         -webkit-filter: none !important;
     }}
-
-    [data-testid="stHorizontalBlock"] {{ margin: 0 !important; padding: 0 !important; }}
-    [data-testid="column"] {{ padding: 0 !important; }}
 
     .left-side-container {{
         background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%) !important;
@@ -137,46 +138,44 @@ def clean_domain(url):
     if domain.startswith('www.'): domain = domain[4:]
     return domain.split('/')[0]
 
-# ۵. تابع هوشمند استعلام مجوز با زمان‌بندی دقیق
+# ۵. تابع مقاوم‌سازی‌شده استعلام برای سرور ابری
 def check_ecunion_modal(page, site_url):
     domain = clean_domain(site_url)
     if not domain: 
         return "آدرس نامعتبر"
     
     try:
-        # لود صفحه اصلی
-        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=30000)
-        time.sleep(2.0)
+        # لود اولیه صفحه
+        response = page.goto("https://ecunion.ir/", wait_until="commit", timeout=35000)
+        time.sleep(3.0)
         
-        # کلیک روی دکمه استعلام مجوز
-        btn = page.locator("text=استعلام مجوز").first
+        # تلاش برای یافتن دکمه استعلام با انتخابگرهای متعدد
+        btn = page.locator("text=استعلام مجوز, a:has-text('استعلام'), button:has-text('استعلام')").first
         if btn.is_visible(): 
             btn.click()
-        else: 
-            page.locator("a[href*='modal'], button[data-toggle='modal']").first.click()
+        else:
+            page.evaluate("() => { const el = document.querySelector(\"a[href*='modal'], button[data-toggle='modal']\"); if(el) el.click(); }")
             
-        # منتظر ماندن برای باز شدن مدال استعلام
-        page.wait_for_selector(".modal-body input, input[type='text']", state="visible", timeout=10000)
+        time.sleep(2.0)
         
-        search_input = page.locator(".modal-body input, input[type='text']").first
+        # یافتن اینپوت و تایپ دامنه
+        search_input = page.locator("input[type='text'], .modal-body input").first
+        search_input.wait_for(state="visible", timeout=10000)
         search_input.click()
         search_input.fill("")
-        search_input.type(domain, delay=50)
+        search_input.type(domain, delay=70)
         time.sleep(1.0)
         
-        # فشردن دکمه اینتر و انتظار برای ثبت جستجو
+        # ارسال فرم
         page.keyboard.press("Enter")
-        time.sleep(3.5)
+        time.sleep(4.0)
         
-        # استخراج متن نتیجه
-        popup_element = page.locator(".modal-body, .modal-content").first
-        popup_text = popup_element.inner_text() if popup_element.is_visible() else page.locator("body").inner_text()
+        # دریافت پاسخ
+        popup_text = page.locator("body").inner_text()
         
-        # بررسی نبود مجوز
         if any(msg in popup_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
             return "مجوزی در اتحادیه ثبت نشده"
             
-        # جستجوی تاریخ شمسی با فرمت YYYY/MM/DD
         date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', popup_text)
         if date_match: 
             return f"معتبر تا {date_match.group(1)}"
@@ -188,16 +187,16 @@ def check_ecunion_modal(page, site_url):
                     
         return "مجوزی در اتحادیه ثبت نشده"
         
-    except Exception:
-        return "خطا در پردازش آدرس"
+    except Exception as e:
+        return f"خطا در پردازش آدرس"
 
 if 'stop_processing' not in st.session_state:
     st.session_state['stop_processing'] = False
 
-# ۶. چیدمان درست ستون‌ها
-col_left, col_right = st.columns([1, 1])
+# ۶. چیدمان ستون‌ها
+col_right, col_left = st.columns([1, 1])
 
-# ستون سمت چپ (بنر برند)
+# ستون سمت چپ (بنر برند سرمه‌ای)
 with col_left:
     img_iran_html = f'<img src="{logo_iran}" width="480" style="filter: brightness(0) invert(1); margin-bottom: 5px; max-width: 90%; height: auto;">' if logo_iran else ''
     img_union_html = f'<img src="{logo_union}" width="360" style="margin-bottom: 15px; max-width: 80%; height: auto;">' if logo_union else ''
@@ -214,13 +213,13 @@ with col_left:
     </div>
     """, unsafe_allow_html=True)
 
-# ستون سمت راست (بخش آپلود و پردازش)
+# ستون سمت راست (فرم آپلود و دکمه‌ها)
 with col_right:
     st.markdown('<div class="right-side-container">', unsafe_allow_html=True)
     st.markdown("""
     <div style="margin-bottom: 25px; text-align: center;">
         <h2 style="color: #0f172a; font-size: 26px; font-weight: bold; margin: 0;">پردازش فایل اکسل</h2>
-        <p style="color: #64748b; font-size: 14px; margin-top: 10px;">فایل اکسل لیست سایت‌ها را جهت استعلام اپلود کنید.</p>
+        <p style="color: #64748b; font-size: 14px; margin-top: 10px;">فایل اکسل لیست سایت‌ها را جهت استعلام آپلود کنید.</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -270,7 +269,11 @@ with col_right:
                             "--disable-gpu"
                         ]
                     )
-                    page = browser.new_page()
+                    # تنظیم هویت مرورگر واقعی تا توسط سرور بلاک نشود
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
+                    page = context.new_page()
 
                     for index, row in df.iterrows():
                         if st.session_state.get('stop_processing', False):
