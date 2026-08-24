@@ -13,7 +13,7 @@ except ImportError:
 
 os.system("playwright install chromium")
 
-# ۲. تنظیم حلقه رویدادهای ویندوز
+# ۲. تنظیم حلقه رویدادهای ویندوز (در صورت اجرای لوکال در ویندوز)
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -136,80 +136,89 @@ def clean_domain(url):
     if domain.startswith('www.'): domain = domain[4:]
     return domain.split('/')[0]
 
-# ۵. تابع هوشمند استعلام با چند سطح پشتیبانی (Fallback)
+# ۵. تابع اصلی بررسی سایت (کد نهایی و اصلاح شده برای دور زدن پاپ‌آپ)
 def check_ecunion_modal(page, site_url):
     domain = clean_domain(site_url)
     if not domain: 
         return "آدرس نامعتبر"
     
     try:
-        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=40000)
-        time.sleep(2)
+        # ۱. بارگذاری صفحه اصلی
+        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=30000)
+        time.sleep(1)
 
-        # روش اول: تلاش برای باز کردن مودال
-        try:
+        # ۲. نمایش اجباری و مستقیم پاپ‌آپ با جاوااسکریپت (بدون نیاز به پیدا کردن دکمه و کلیک)
+        page.evaluate("""() => {
+            const modal = document.querySelector('#licenseModal') || document.querySelector('.modal');
+            if (modal) {
+                modal.classList.add('in', 'show');
+                modal.style.display = 'block';
+                document.body.classList.add('modal-open');
+            }
+        }""")
+        time.sleep(1)
+
+        # ۳. یافتن اینپوت متنی داخلی مودال و درج دامنه‌ی مورد نظر
+        input_selector = ".modal input[type='text'], #licenseModal input, input[placeholder*='نام']"
+        
+        # اگر پاپ‌آپ باز نشد، کلیک روی آیکون استعلام را اجرا کن
+        if not page.is_visible(input_selector):
             page.evaluate("""() => {
-                const btns = Array.from(document.querySelectorAll('a, button, div'));
-                const target = btns.find(b => b.textContent && b.textContent.includes('استعلام'));
+                const elems = Array.from(document.querySelectorAll('h5, div, span, p, a'));
+                const target = elems.find(el => el.textContent.includes('استعلام مجوز'));
                 if (target) target.click();
             }""")
-            time.sleep(1.5)
-        except:
-            pass
+            time.sleep(2)
 
-        # روش دوم: یافتن فیلد ورودی متن
-        input_element = None
-        selectors = ["input[type='text']", "input[name*='search']", "input[placeholder*='دامنه']", ".modal-body input", "input"]
-        for sel in selectors:
-            try:
-                loc = page.locator(sel).first
-                if loc.is_visible():
-                    input_element = loc
-                    break
-            except:
-                continue
+        # ۴. تایپ دامنه و ثبت
+        search_input = page.locator(input_selector).first
+        search_input.wait_for(state="visible", timeout=7000)
+        search_input.click()
+        search_input.fill("")
+        search_input.type(domain, delay=50)
+        time.sleep(0.5)
 
-        if not input_element:
-            # اگر فیلد پیدا نشد، مستقیم با جاوااسکریپت مقداردهی و ارسال می‌کنیم
-            page.evaluate(f"""() => {{
-                const inp = document.querySelector('input');
-                if (inp) {{
-                    inp.value = '{domain}';
-                    inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                    inp.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                }}
-            }}""")
+        # کلیک روی دکمه سبز رنگ «جستجو»
+        search_btn = page.locator(".modal button:has-text('جستجو'), .modal .btn-success, #licenseModal button").first
+        if search_btn.is_visible():
+            search_btn.click()
         else:
-            input_element.click()
-            input_element.fill(domain)
+            search_input.press("Enter")
 
-        time.sleep(1)
-        page.keyboard.press("Enter")
-        time.sleep(4)
+        # ۵. انتظار برای دریافت پاسخ از سرور
+        time.sleep(3)
 
-        popup_text = page.locator("body").inner_text()
+        # ۶. استخراج متن باکس نتایج درون پاپ‌آپ
+        modal_element = page.locator(".modal-body, .modal-content").first
+        modal_text = modal_element.inner_text() if modal_element.is_visible() else page.locator("body").inner_text()
 
-        if any(msg in popup_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
+        # بررسی سناریوهای نتیجه
+        if any(msg in modal_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
             return "مجوزی در اتحادیه ثبت نشده"
 
-        date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', popup_text)
-        if date_match: 
-            return f"معتبر تا {date_match.group(1)}"
+        # استخراج تاریخ اعتبار (مانند از تاریخ ۱۴۰۴/۰۲/۰۸ به مدت ۵ سال)
+        date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', modal_text)
+        if date_match:
+            duration_match = re.search(r'به مدت\s*(\d+)\s*سال', modal_text)
+            if duration_match:
+                return f"از تاریخ {date_match.group(1)} ({duration_match.group(0)})"
+            return f"از تاریخ {date_match.group(1)}"
 
-        for line in popup_text.split('\n'):
-            if any(kw in line for kw in ["اعتبار", "انقضا", "تاریخ"]):
-                if len(line.strip()) < 50:
+        # اگر تاریخ با فرمت استاندارد نبود
+        for line in modal_text.split('\n'):
+            if any(kw in line for kw in ["مدت اعتبار", "تاریخ اعتبار", "مدت انقضا"]):
+                if len(line.strip()) < 80:
                     return line.strip()
 
         return "مجوزی در اتحادیه ثبت نشده"
 
-    except Exception as e:
+    except Exception:
         return "خطا در پردازش آدرس"
 
 if 'stop_processing' not in st.session_state:
     st.session_state['stop_processing'] = False
 
-# ۶. چیدمان ستون‌ها
+# ۶. چیدمان ستون‌ها و رابط کاربری
 col_right, col_left = st.columns([1, 1])
 
 with col_left:
@@ -285,7 +294,7 @@ with col_right:
                     )
                     context = browser.new_context(
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        viewport={"width": 1280, "height": 720}
+                        viewport={"width": 1366, "height": 768}
                     )
                     page = context.new_page()
 
@@ -309,6 +318,7 @@ with col_right:
                         else:
                             time_str = " | ⏳ زمان باقیمانده: در حال محاسبه..."
 
+                        # رد کردن سایت‌هایی که قبلا نتیجه گرفتند (و از خطاها دوباره امتحان می‌کند)
                         if pd.notna(row['تاریخ اعتبار اتحادیه']) and current_val not in ["", "None", "nan", "خطا در پردازش آدرس"]:
                             status_box.info(f"⏭️ قبلاً انجام شده ({pct}% | {index + 1} از {total_rows}){time_str}: {site_url}")
                             continue
