@@ -1,30 +1,15 @@
 import sys
-import asyncio
 import io
 import os
-import subprocess
-
-# ۱. نصب و آماده‌سازی Playwright و مرورگر برای سرور ابری
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "playwright"])
-    from playwright.sync_api import sync_playwright
-
-os.system("playwright install chromium")
-
-# ۲. تنظیم حلقه رویدادهای ویندوز (در صورت اجرای لوکال در ویندوز)
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
 import streamlit as st
 import pandas as pd
 import re
 import time
 import base64
+import requests
 from urllib.parse import urlparse
 
-# ۳. پیکربندی اولیه صفحه Streamlit
+# ۱. پیکربندی اولیه صفحه Streamlit
 st.set_page_config(
     page_title="سامانه هوشمند استعلام اتحادیه",
     page_icon="📜",
@@ -65,7 +50,7 @@ font_css = f"""
 }}
 """ if font_base64 else "@import url('https://v1.fontapi.ir/css/Rey');"
 
-# ۴. استایل CSS
+# ۲. استایل CSS
 st.markdown(f"""
 <style>
     {font_css}
@@ -136,89 +121,52 @@ def clean_domain(url):
     if domain.startswith('www.'): domain = domain[4:]
     return domain.split('/')[0]
 
-# ۵. تابع اصلی بررسی سایت (کد نهایی و اصلاح شده برای دور زدن پاپ‌آپ)
-def check_ecunion_modal(page, site_url):
+# ۳. تابع جدید استعلام بدون مرورگر (مستقیم با Request)
+def check_ecunion_direct(site_url):
     domain = clean_domain(site_url)
     if not domain: 
         return "آدرس نامعتبر"
     
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Referer': 'https://ecunion.ir/'
+    }
+    
     try:
-        # ۱. بارگذاری صفحه اصلی
-        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=30000)
-        time.sleep(1)
-
-        # ۲. نمایش اجباری و مستقیم پاپ‌آپ با جاوااسکریپت (بدون نیاز به پیدا کردن دکمه و کلیک)
-        page.evaluate("""() => {
-            const modal = document.querySelector('#licenseModal') || document.querySelector('.modal');
-            if (modal) {
-                modal.classList.add('in', 'show');
-                modal.style.display = 'block';
-                document.body.classList.add('modal-open');
-            }
-        }""")
-        time.sleep(1)
-
-        # ۳. یافتن اینپوت متنی داخلی مودال و درج دامنه‌ی مورد نظر
-        input_selector = ".modal input[type='text'], #licenseModal input, input[placeholder*='نام']"
+        session = requests.Session()
+        # اول فراخوانی صفحه اصلی برای دریافت کوکی‌ها
+        session.get("https://ecunion.ir/", headers=headers, timeout=15)
         
-        # اگر پاپ‌آپ باز نشد، کلیک روی آیکون استعلام را اجرا کن
-        if not page.is_visible(input_selector):
-            page.evaluate("""() => {
-                const elems = Array.from(document.querySelectorAll('h5, div, span, p, a'));
-                const target = elems.find(el => el.textContent.includes('استعلام مجوز'));
-                if (target) target.click();
-            }""")
-            time.sleep(2)
+        # ارسال درخواست استعلام مستقیماً به نقطه پایانی
+        response = session.post(
+            "https://ecunion.ir/estelam",
+            data={'domain': domain, 'search': domain},
+            headers=headers,
+            timeout=20
+        )
+        
+        text = response.text
 
-        # ۴. تایپ دامنه و ثبت
-        search_input = page.locator(input_selector).first
-        search_input.wait_for(state="visible", timeout=7000)
-        search_input.click()
-        search_input.fill("")
-        search_input.type(domain, delay=50)
-        time.sleep(0.5)
-
-        # کلیک روی دکمه سبز رنگ «جستجو»
-        search_btn = page.locator(".modal button:has-text('جستجو'), .modal .btn-success, #licenseModal button").first
-        if search_btn.is_visible():
-            search_btn.click()
-        else:
-            search_input.press("Enter")
-
-        # ۵. انتظار برای دریافت پاسخ از سرور
-        time.sleep(3)
-
-        # ۶. استخراج متن باکس نتایج درون پاپ‌آپ
-        modal_element = page.locator(".modal-body, .modal-content").first
-        modal_text = modal_element.inner_text() if modal_element.is_visible() else page.locator("body").inner_text()
-
-        # بررسی سناریوهای نتیجه
-        if any(msg in modal_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
+        if any(msg in text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
             return "مجوزی در اتحادیه ثبت نشده"
 
-        # استخراج تاریخ اعتبار (مانند از تاریخ ۱۴۰۴/۰۲/۰۸ به مدت ۵ سال)
-        date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', modal_text)
+        date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', text)
         if date_match:
-            duration_match = re.search(r'به مدت\s*(\d+)\s*سال', modal_text)
+            duration_match = re.search(r'به مدت\s*(\d+)\s*سال', text)
             if duration_match:
                 return f"از تاریخ {date_match.group(1)} ({duration_match.group(0)})"
             return f"از تاریخ {date_match.group(1)}"
 
-        # اگر تاریخ با فرمت استاندارد نبود
-        for line in modal_text.split('\n'):
-            if any(kw in line for kw in ["مدت اعتبار", "تاریخ اعتبار", "مدت انقضا"]):
-                if len(line.strip()) < 80:
-                    return line.strip()
-
         return "مجوزی در اتحادیه ثبت نشده"
 
-    except Exception:
-        return "خطا در پردازش آدرس"
+    except Exception as e:
+        return f"خطا در پردازش آدرس"
 
 if 'stop_processing' not in st.session_state:
     st.session_state['stop_processing'] = False
 
-# ۶. چیدمان ستون‌ها و رابط کاربری
+# ۴. چیدمان ستون‌ها
 col_right, col_left = st.columns([1, 1])
 
 with col_left:
@@ -281,55 +229,37 @@ with col_right:
                 total_rows = len(df)
                 start_time = time.time()
                 processed_count = 0
-                
-                with sync_playwright() as p:
-                    browser = p.chromium.launch(
-                        headless=True,
-                        args=[
-                            "--no-sandbox",
-                            "--disable-setuid-sandbox",
-                            "--disable-dev-shm-usage",
-                            "--disable-gpu"
-                        ]
-                    )
-                    context = browser.new_context(
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        viewport={"width": 1366, "height": 768}
-                    )
-                    page = context.new_page()
 
-                    for index, row in df.iterrows():
-                        if st.session_state.get('stop_processing', False):
-                            status_box.error("⛔ پردازش توسط کاربر متوقف شد.")
-                            break
+                for index, row in df.iterrows():
+                    if st.session_state.get('stop_processing', False):
+                        status_box.error("⛔ پردازش توسط کاربر متوقف شد.")
+                        break
 
-                        site_url = str(row[url_col]).strip()
-                        current_val = str(row['تاریخ اعتبار اتحادیه']).strip()
+                    site_url = str(row[url_col]).strip()
+                    current_val = str(row['تاریخ اعتبار اتحادیه']).strip()
 
-                        pct = int(((index + 1) / total_rows) * 100)
-                        progress_bar.progress(pct)
+                    pct = int(((index + 1) / total_rows) * 100)
+                    progress_bar.progress(pct)
 
-                        if processed_count > 0:
-                            elapsed = time.time() - start_time
-                            avg_time = elapsed / processed_count
-                            remaining_items = total_rows - (index + 1)
-                            eta_seconds = remaining_items * avg_time
-                            time_str = f" | ⏳ زمان باقیمانده: {format_time(eta_seconds)}"
-                        else:
-                            time_str = " | ⏳ زمان باقیمانده: در حال محاسبه..."
+                    if processed_count > 0:
+                        elapsed = time.time() - start_time
+                        avg_time = elapsed / processed_count
+                        remaining_items = total_rows - (index + 1)
+                        eta_seconds = remaining_items * avg_time
+                        time_str = f" | ⏳ زمان باقیمانده: {format_time(eta_seconds)}"
+                    else:
+                        time_str = " | ⏳ زمان باقیمانده: در حال محاسبه..."
 
-                        # رد کردن سایت‌هایی که قبلا نتیجه گرفتند (و از خطاها دوباره امتحان می‌کند)
-                        if pd.notna(row['تاریخ اعتبار اتحادیه']) and current_val not in ["", "None", "nan", "خطا در پردازش آدرس"]:
-                            status_box.info(f"⏭️ قبلاً انجام شده ({pct}% | {index + 1} از {total_rows}){time_str}: {site_url}")
-                            continue
+                    if pd.notna(row['تاریخ اعتبار اتحادیه']) and current_val not in ["", "None", "nan", "خطا در پردازش آدرس"]:
+                        status_box.info(f"⏭️ قبلاً انجام شده ({pct}% | {index + 1} از {total_rows}){time_str}: {site_url}")
+                        continue
 
-                        status_box.warning(f"🔍 در حال استعلام ({pct}% | {index + 1} از {total_rows}){time_str}: {site_url}")
+                    status_box.warning(f"🔍 در حال استعلام ({pct}% | {index + 1} از {total_rows}){time_str}: {site_url}")
 
-                        res = check_ecunion_modal(page, site_url)
-                        df.at[index, 'تاریخ اعتبار اتحادیه'] = res
-                        processed_count += 1
-
-                    browser.close()
+                    res = check_ecunion_direct(site_url)
+                    df.at[index, 'تاریخ اعتبار اتحادیه'] = res
+                    processed_count += 1
+                    time.sleep(0.5)
 
                 if not st.session_state.get('stop_processing', False):
                     status_box.success("✅ پردازش فایل با موفقیت کامل شد!")
