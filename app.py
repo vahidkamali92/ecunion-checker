@@ -1,8 +1,21 @@
 import sys
 import asyncio
 import io
+import os
+import subprocess
 
-# ۱. تنظیم حلقه رویدادهای ویندوز (در صورت اجرا روی محیط ویندوز)
+# نصب اتوماتیک باینری‌های Playwright در محیط ابری (Streamlit Cloud)
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "playwright"])
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+    from playwright.sync_api import sync_playwright
+
+# دانلود خودکار Chromium روی سرور لینوکس در صورت عدم وجود
+os.system("playwright install chromium")
+
+# ۱. تنظیم حلقه رویدادهای ویندوز
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -10,10 +23,8 @@ import streamlit as st
 import pandas as pd
 import re
 import time
-import os
 import base64
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
 
 # ۲. پیکربندی اولیه صفحه Streamlit
 st.set_page_config(
@@ -104,7 +115,7 @@ st.markdown(f"""
     
     div[data-testid="column"]:nth-child(1) .stButton>button {{ background-color: #0ea5e9 !important; color: white !important; border: none !important; border-radius: 10px !important; padding: 12px !important; font-size: 15px !important; font-weight: bold !important; width: 100%; }}
     div[data-testid="column"]:nth-child(2) .stButton>button {{ background-color: #ef4444 !important; color: white !important; border: none !important; border-radius: 10px !important; padding: 12px !important; font-size: 15px !important; font-weight: bold !important; width: 100%; }}
-    .stDownloadButton>button {{ width: 100%; background-color: #10b981 !important; color: white !important; border: none !important; border-radius: 10px !important; padding: 12px !important; font-weight: bold !important; border: none !important; }}
+    .stDownloadButton>button {{ width: 100%; background-color: #10b981 !important; color: white !important; border-radius: 10px !important; padding: 12px !important; font-weight: bold !important; border: none !important; }}
 </style>
 
 <script>
@@ -221,14 +232,12 @@ with col_right:
                 processed_count = 0
                 
                 with sync_playwright() as p:
-                    # تنظیمات بهینه سرور برای اجرا در محیط ابری
                     browser = p.chromium.launch(
                         headless=True,
                         args=[
                             "--no-sandbox",
                             "--disable-setuid-sandbox",
                             "--disable-dev-shm-usage",
-                            "--disable-accelerated-2d-canvas",
                             "--disable-gpu"
                         ]
                     )
@@ -277,7 +286,6 @@ with col_right:
             st.write("📋 **پیش‌نمایش نتایج:**")
             st.dataframe(df_out, use_container_width=True)
             
-            # ذخیره خروجی اکسل مستقیماً در حافظه (RAM) جهت جلوگیری از تداخل کاربران
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_out.to_excel(writer, index=False)
