@@ -4,18 +4,16 @@ import io
 import os
 import subprocess
 
-# نصب اتوماتیک باینری‌های Playwright در محیط ابری (Streamlit Cloud)
+# ۱. نصب و آماده‌سازی Playwright و مرورگر برای سرور ابری
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "playwright"])
-    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
     from playwright.sync_api import sync_playwright
 
-# دانلود خودکار Chromium روی سرور لینوکس در صورت عدم وجود
 os.system("playwright install chromium")
 
-# ۱. تنظیم حلقه رویدادهای ویندوز
+# ۲. تنظیم حلقه رویدادهای ویندوز
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -26,7 +24,7 @@ import time
 import base64
 from urllib.parse import urlparse
 
-# ۲. پیکربندی اولیه صفحه Streamlit
+# ۳. پیکربندی اولیه صفحه Streamlit
 st.set_page_config(
     page_title="سامانه هوشمند استعلام اتحادیه",
     page_icon="📜",
@@ -67,29 +65,32 @@ font_css = f"""
 }}
 """ if font_base64 else "@import url('https://v1.fontapi.ir/css/Rey');"
 
-# ۳. استایل کاملاً قدرتمند خنثی‌سازی افکت Blur / Gray
+# ۴. استایل کامل CSS - رفع بهم‌ریختگی دکمه آپلود و مات شدن صفحه
 st.markdown(f"""
 <style>
     {font_css}
-    * {{ font-family: 'ReyFont', 'Rey', 'Vazirmatn', sans-serif !important; }}
+    * {{ font-family: 'ReyFont', 'Rey', 'Vazirmatn', sans-serif; }}
     #MainMenu, footer, header, [data-testid="stHeader"] {{ visibility: hidden !important; display: none !important; }}
     .stApp {{ background-color: #ffffff; direction: rtl; }}
     .block-container {{ padding: 0 !important; max-width: 100% !important; }}
     
+    /* رفع بهم‌ریختگی دکمه آپلود */
+    [data-testid="stFileUploader"] section {{
+        direction: ltr !important;
+        padding: 15px !important;
+    }}
+    [data-testid="stFileUploader"] section * {{
+        font-family: inherit !important;
+    }}
+    [data-testid="stFileUploaderDeleteBtn"] {{
+        direction: rtl !important;
+    }}
+
+    /* خنثی‌سازی اثر مات شدن صفحه */
     html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], [data-testid="stVerticalBlock"], div {{
         opacity: 1 !important;
         filter: none !important;
         -webkit-filter: none !important;
-    }}
-
-    .stSpinner, [data-testid="stStatusWidget"], [data-testid="stOverlay"], div[class*="st-emotion-cache"] {{
-        opacity: 1 !important;
-        filter: none !important;
-    }}
-    
-    [data-test-script-state="running"] {{
-        opacity: 1 !important;
-        filter: none !important;
     }}
 
     [data-testid="stHorizontalBlock"] {{ margin: 0 !important; padding: 0 !important; }}
@@ -111,27 +112,12 @@ st.markdown(f"""
 
     .brand-title {{ font-size: 24px; font-weight: bold; color: #f8fafc; margin-top: 15px; }}
     .brand-sub {{ font-size: 15px; color: #38bdf8; margin-top: 8px; }}
-    .right-side-container {{ max-width: 550px; margin: 0 auto; padding: 50px 20px; }}
+    .right-side-container {{ max-width: 550px; margin: 0 auto; padding: 50px 20px; direction: rtl; }}
     
     div[data-testid="column"]:nth-child(1) .stButton>button {{ background-color: #0ea5e9 !important; color: white !important; border: none !important; border-radius: 10px !important; padding: 12px !important; font-size: 15px !important; font-weight: bold !important; width: 100%; }}
     div[data-testid="column"]:nth-child(2) .stButton>button {{ background-color: #ef4444 !important; color: white !important; border: none !important; border-radius: 10px !important; padding: 12px !important; font-size: 15px !important; font-weight: bold !important; width: 100%; }}
     .stDownloadButton>button {{ width: 100%; background-color: #10b981 !important; color: white !important; border-radius: 10px !important; padding: 12px !important; font-weight: bold !important; border: none !important; }}
 </style>
-
-<script>
-    const keepBright = () => {{
-        const allElements = document.querySelectorAll('*');
-        allElements.forEach(el => {{
-            if (window.getComputedStyle(el).opacity < 1) {{
-                el.style.opacity = '1';
-            }}
-            if (window.getComputedStyle(el).filter !== 'none') {{
-                el.style.filter = 'none';
-            }}
-        }});
-    }};
-    setInterval(keepBright, 50);
-</script>
 """, unsafe_allow_html=True)
 
 def format_time(seconds):
@@ -151,41 +137,84 @@ def clean_domain(url):
     if domain.startswith('www.'): domain = domain[4:]
     return domain.split('/')[0]
 
+# ۵. تابع هوشمند استعلام مجوز با زمان‌بندی دقیق
 def check_ecunion_modal(page, site_url):
     domain = clean_domain(site_url)
-    if not domain: return "آدرس نامعتبر"
+    if not domain: 
+        return "آدرس نامعتبر"
+    
     try:
-        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=25000)
-        time.sleep(1.0)
+        # لود صفحه اصلی
+        page.goto("https://ecunion.ir/", wait_until="domcontentloaded", timeout=30000)
+        time.sleep(2.0)
+        
+        # کلیک روی دکمه استعلام مجوز
         btn = page.locator("text=استعلام مجوز").first
-        if btn.is_visible(): btn.click()
-        else: page.locator("a[href*='modal'], button[data-toggle='modal']").first.click()
-        time.sleep(1.2)
+        if btn.is_visible(): 
+            btn.click()
+        else: 
+            page.locator("a[href*='modal'], button[data-toggle='modal']").first.click()
+            
+        # منتظر ماندن برای باز شدن مدال استعلام
+        page.wait_for_selector(".modal-body input, input[type='text']", state="visible", timeout=10000)
+        
         search_input = page.locator(".modal-body input, input[type='text']").first
         search_input.click()
         search_input.fill("")
-        search_input.type(domain, delay=40)
-        time.sleep(1.2)
+        search_input.type(domain, delay=50)
+        time.sleep(1.0)
+        
+        # فشردن دکمه اینتر و انتظار برای ثبت جستجو
         page.keyboard.press("Enter")
-        time.sleep(2.5)
-        popup_text = page.locator(".modal-body, .modal-content, body").first.inner_text()
-        if any(msg in popup_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب"]):
+        time.sleep(3.5)
+        
+        # استخراج متن نتیجه
+        popup_element = page.locator(".modal-body, .modal-content").first
+        popup_text = popup_element.inner_text() if popup_element.is_visible() else page.locator("body").inner_text()
+        
+        # بررسی نبود مجوز
+        if any(msg in popup_text for msg in ["یافت نشد", "نتیجه‌ای یافت نشد", "موردی انتخاب", "اطلاعاتی موجود نیست"]):
             return "مجوزی در اتحادیه ثبت نشده"
+            
+        # جستجوی تاریخ شمسی با فرمت YYYY/MM/DD
         date_match = re.search(r'(1[34]\d{2}[/-]\d{1,2}[/-]\d{1,2})', popup_text)
-        if date_match: return f"معتبر تا {date_match.group(1)}"
-        if "اعتبار" in popup_text:
+        if date_match: 
+            return f"معتبر تا {date_match.group(1)}"
+            
+        if "اعتبار" in popup_text or "تاریخ" in popup_text:
             for line in popup_text.split('\n'):
-                if "اعتبار" in line or "انقضا" in line: return line.strip()
+                if any(kw in line for kw in ["اعتبار", "انقضا", "تاریخ"]):
+                    return line.strip()
+                    
         return "مجوزی در اتحادیه ثبت نشده"
+        
     except Exception:
         return "خطا در پردازش آدرس"
 
 if 'stop_processing' not in st.session_state:
     st.session_state['stop_processing'] = False
 
-# ۴. چیدمان صفحه
-col_right, col_left = st.columns([1, 1])
+# ۶. چیدمان درست ستون‌ها
+col_left, col_right = st.columns([1, 1])
 
+# ستون سمت چپ (بنر برند)
+with col_left:
+    img_iran_html = f'<img src="{logo_iran}" width="480" style="filter: brightness(0) invert(1); margin-bottom: 5px; max-width: 90%; height: auto;">' if logo_iran else ''
+    img_union_html = f'<img src="{logo_union}" width="360" style="margin-bottom: 15px; max-width: 80%; height: auto;">' if logo_union else ''
+
+    st.markdown(f"""
+    <div class="left-side-container">
+        <div>{img_iran_html}</div>
+        <hr style="border: 0; border-top: 1px solid #334155; width: 60%; margin: 20px 0;">
+        <div>
+            {img_union_html}
+            <div class="brand-title">اتحادیه کشوری کسب‌وکارهای مجازی</div>
+            <div class="brand-sub">سامانه استعلام آنلاین و هوشمند مجوزها</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ستون سمت راست (بخش آپلود و پردازش)
 with col_right:
     st.markdown('<div class="right-side-container">', unsafe_allow_html=True)
     st.markdown("""
@@ -299,20 +328,3 @@ with col_right:
             )
 
     st.markdown('</div>', unsafe_allow_html=True)
-
-# پنل سمت چپ
-with col_left:
-    img_iran_html = f'<img src="{logo_iran}" width="480" style="filter: brightness(0) invert(1); margin-bottom: 5px; max-width: 90%; height: auto;">' if logo_iran else ''
-    img_union_html = f'<img src="{logo_union}" width="360" style="margin-bottom: 15px; max-width: 80%; height: auto;">' if logo_union else ''
-
-    st.markdown(f"""
-    <div class="left-side-container">
-        <div>{img_iran_html}</div>
-        <hr style="border: 0; border-top: 1px solid #334155; width: 60%; margin: 20px 0;">
-        <div>
-            {img_union_html}
-            <div class="brand-title">اتحادیه کشوری کسب‌وکارهای مجازی</div>
-            <div class="brand-sub">سامانه استعلام آنلاین و هوشمند مجوزها</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
